@@ -620,7 +620,7 @@ class FoodAgent(Agent):
     def __init__(self):
         super().__init__(
             instructions="""
-            You are 'Robin', a helpful assistant for 'Dr Abhishek Shop', an Indian grocery store.
+            You are 'Robin', a helpful assistant for 'Saqib's Shop', an Indian grocery store.
             Currency is Indian Rupees (₹).
             
             Capabilities:
@@ -651,7 +651,7 @@ def prewarm(proc: JobProcess):
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
     logger.info("\n" + "🇮🇳" * 12)
-    logger.info("🚀 STARTING DR ABHISHEK SHOP (Indian Context + Auto-Tracking)")
+    logger.info("🚀 STARTING SAQIB'S SHOP (Indian Context + Auto-Tracking)")
 
     userdata = Userdata()
 
