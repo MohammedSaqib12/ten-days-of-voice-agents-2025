@@ -553,4 +553,129 @@ async def place_order(
 
     # 3. Trigger Background Simulation (Received -> Shipped -> Out for delivery...)
     try:
-        # cre
+        # create a background task on the running event loop
+        asyncio.create_task(simulate_delivery_flow(order_id))
+    except RuntimeError:
+        # If there is no running loop, schedule on a new loop in a background thread
+        loop = asyncio.new_event_loop()
+        asyncio.get_running_loop() if asyncio.get_event_loop().is_running() else None
+        # fire-and-forget: run in background
+        asyncio.get_event_loop().call_soon_threadsafe(lambda: asyncio.create_task(simulate_delivery_flow(order_id)))
+
+    return f"Order placed successfully! Order ID: {order_id}. Total: \u20B9{total:.2f}. I have initiated express shipping; the status will update automatically shortly."
+
+
+@function_tool
+async def cancel_order(
+    ctx: RunContext[Userdata],
+    order_id: Annotated[str, Field(description="Order ID to cancel")],
+) -> str:
+    o = get_order_db(order_id)
+    if not o:
+        return f"No order found with id {order_id}."
+
+    status = o.get("status", "")
+    if status == "delivered":
+        return f"Order {order_id} has already been delivered and cannot be cancelled."
+
+    if status == "cancelled":
+        return f"Order {order_id} is already cancelled."
+
+    # Update DB
+    update_order_status_db(order_id, "cancelled")
+    return f"Order {order_id} has been cancelled successfully."
+
+
+@function_tool
+async def get_order_status(
+    ctx: RunContext[Userdata],
+    order_id: Annotated[str, Field(description="Order ID to check")],
+) -> str:
+    o = get_order_db(order_id)
+    if not o:
+        return f"No order found with id {order_id}."
+    return f"Order {order_id} status: {o.get('status', 'unknown')}. Updated at: {o.get('updated_at')}"
+
+
+@function_tool
+async def order_history(
+    ctx: RunContext[Userdata],
+    customer_name: Annotated[Optional[str], Field(description="Optional customer name to filter", default=None)] = None,
+) -> str:
+    rows = list_orders_db(limit=5, customer_name=customer_name)
+    if not rows:
+        return "No orders found."
+    lines = []
+    for o in rows:
+        lines.append(f"- {o['order_id']} | \u20B9{o['total']:.2f} | Status: {o.get('status')}")
+    prefix = "Recent Orders"
+    if customer_name:
+        prefix += f" for {customer_name}"
+    return prefix + ":\n" + "\n".join(lines)
+
+# -------------------------
+# Agent Definition
+# -------------------------
+class FoodAgent(Agent):
+    def __init__(self):
+        super().__init__(
+            instructions="""
+            You are 'Robin', a helpful assistant for 'Dr Abhishek Shop', an Indian grocery store.
+            Currency is Indian Rupees (₹).
+            
+            Capabilities:
+            1. Catalog: Search for Indian items (Amul milk, Tata salt, Maggi, Basmati rice).
+            2. Cart: Add/Remove items, Show cart.
+            3. Recipes: Add ingredients for dishes like Chai, Maggi, Paneer Butter Masala.
+            4. Orders: Place orders.
+            5. Cancellation: You can CANCEL an order if the user asks, provided it's not delivered yet.
+            
+            When placing an order, mention that express tracking is enabled.
+            If user asks "Where is my order?", check status. 
+            The status advances automatically (simulated) so encourage them to check back in a few seconds.
+            """,
+            tools=[find_item, add_to_cart, remove_from_cart, update_cart_quantity, show_cart, add_recipe, place_order, cancel_order, get_order_status, order_history],
+        )
+
+# -------------------------
+# Entrypoint
+# -------------------------
+def prewarm(proc: JobProcess):
+    # load VAD model and stash on process userdata
+    try:
+        proc.userdata["vad"] = silero.VAD.load()
+    except Exception:
+        logger.warning("VAD prewarm failed; continuing without preloaded VAD.")
+
+
+async def entrypoint(ctx: JobContext):
+    ctx.log_context_fields = {"room": ctx.room.name}
+    logger.info("\n" + "🇮🇳" * 12)
+    logger.info("🚀 STARTING DR ABHISHEK SHOP (Indian Context + Auto-Tracking)")
+
+    userdata = Userdata()
+
+    session = AgentSession(
+        stt=deepgram.STT(model="nova-3"),
+        llm=google.LLM(model="gemini-2.5-flash"),
+        tts=murf.TTS(
+            voice="en-US-marcus",
+            style="Conversational",
+            text_pacing=True,
+        ),
+        turn_detection=MultilingualModel(),
+        vad=ctx.proc.userdata.get("vad"),
+        userdata=userdata,
+    )
+
+    await session.start(
+        agent=FoodAgent(),
+        room=ctx.room,
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+    )
+
+    await ctx.connect()
+
+
+if __name__ == "__main__":
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
